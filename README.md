@@ -12,13 +12,9 @@ execution.
 
 ## Tests
 
-Run the unit tests with `mvn test`. Run the Keycloak integration test with
-`mvn verify`; it requires Docker, `keytool`, and access to the
-`quay.io/keycloak/keycloak:26.7.4` image. The integration test installs the
-provider into a temporary Keycloak server and uses a fake User-Agent that
-generates valid test TPM registration and binding statements. It exercises the
-OIDC login flow and HTTP/session handoffs, but does not emulate a browser's
-hardware key store or a physical TPM.
+See [TESTING.md](TESTING.md) for test commands, prerequisites, coverage, and
+limitations. Run `mvn test` for unit tests or `mvn verify` to include the
+Testcontainers-based Keycloak integration test.
 
 ## Registration endpoint
 
