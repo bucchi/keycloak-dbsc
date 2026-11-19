@@ -25,21 +25,36 @@ final class DbscProofVerifier {
     }
 
     VerifiedProof verify(String encodedProof, String expectedChallenge, String expectedAudience) throws Exception {
-        byte[] proofBytes = decodeBase64Url(encodedProof, "jti");
-        JWSInput proof = parseJws(new String(proofBytes, StandardCharsets.UTF_8), "DBSC proof JWS");
-        if (!"dbsc+jwt".equals(proof.getHeader().getType())) {
-            throw new SecurityException("内側JWSのtypがdbsc+jwtではありません。");
-        }
-
-        JWK signingKey = readHeaderJwk(proof, "DBSC proof JWSにsigning JWKがありません。");
+        ParsedProof parsed = parse(encodedProof);
+        JWSInput proof = parsed.jws();
+        JWK signingKey = parsed.signingKey();
         verifyJwsSignature(proof, signingKey);
-        JsonNode payload = readJson(proof.getContent(), "DBSC proof payload");
+        JsonNode payload = parsed.payload();
         if (!expectedChallenge.equals(requiredText(payload, "jti"))) {
             throw new SecurityException("DBSC proofのchallengeがサーバー発行値と一致しません。");
         }
         requireAudience(payload.path("aud"), expectedAudience, "DBSC proof");
 
         return new VerifiedProof(signingKey, proof.getHeader().getRawAlgorithm());
+    }
+
+    String extractChallenge(String encodedProof) {
+        try {
+            return requiredText(parse(encodedProof).payload(), "jti");
+        } catch (Exception e) {
+            throw new SecurityException("DBSC proofからchallengeを取得できません。", e);
+        }
+    }
+
+    private ParsedProof parse(String encodedProof) throws Exception {
+        byte[] proofBytes = decodeBase64Url(encodedProof, "jti");
+        JWSInput proof = parseJws(new String(proofBytes, StandardCharsets.UTF_8), "DBSC proof JWS");
+        if (!"dbsc+jwt".equals(proof.getHeader().getType())) {
+            throw new SecurityException("内側JWSのtypがdbsc+jwtではありません。");
+        }
+        JWK signingKey = readHeaderJwk(proof, "DBSC proof JWSにsigning JWKがありません。");
+        JsonNode payload = readJson(proof.getContent(), "DBSC proof payload");
+        return new ParsedProof(proof, signingKey, payload);
     }
 
     void verifyJwsSignature(JWSInput jws, JWK jwk) throws Exception {
@@ -67,13 +82,21 @@ final class DbscProofVerifier {
 
     JWK readHeaderJwk(JWSInput jws, String error) throws Exception {
         if (jws.getHeader().getKey() != null) {
-            return jws.getHeader().getKey();
+            return readPublicJwk(mapper.valueToTree(jws.getHeader().getKey()), error);
         }
         Object value = jws.getHeader().getOtherClaims().get("jwk");
         if (!(value instanceof Map<?, ?> jwkMap)) {
             throw new SecurityException(error);
         }
-        return mapper.readValue(mapper.writeValueAsBytes(jwkMap), JWK.class);
+        return readPublicJwk(mapper.valueToTree(jwkMap), error);
+    }
+
+    private JWK readPublicJwk(JsonNode jwk, String error) throws Exception {
+        return switch (jwk.path("kty").asText()) {
+            case "EC" -> mapper.treeToValue(jwk, ECPublicJWK.class);
+            case "RSA" -> mapper.treeToValue(jwk, RSAPublicJWK.class);
+            default -> throw new SecurityException(error);
+        };
     }
 
     JWSInput parseJws(String value, String description) {
@@ -146,5 +169,8 @@ final class DbscProofVerifier {
     }
 
     record VerifiedProof(JWK signingKey, String algorithm) {
+    }
+
+    private record ParsedProof(JWSInput jws, JWK signingKey, JsonNode payload) {
     }
 }

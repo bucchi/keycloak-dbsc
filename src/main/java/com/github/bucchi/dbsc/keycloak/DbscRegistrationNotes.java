@@ -15,6 +15,9 @@ public final class DbscRegistrationNotes {
     public static final String SESSION_ID_NOTE = "dbsc.session.id";
     public static final String SIGNING_KEY_NOTE = "dbsc.signing.jwk";
     public static final String ATTESTATION_KEY_NOTE = "dbsc.attestation.jwk";
+    public static final String ATTESTATION_FORMAT_NOTE = "dbsc.attestation.format";
+    public static final String ATTESTATION_ALGORITHM_NOTE = "dbsc.attestation.alg";
+    public static final String COMPLETED_CHALLENGE_NOTE = "dbsc.registration.completed-challenge";
     public static final String GRANT_HASH_NOTE = "dbsc.grant.sha256";
 
     private static final String CHALLENGE_KEY_PREFIX = "dbsc:registration:";
@@ -55,6 +58,23 @@ public final class DbscRegistrationNotes {
         }
         userSession.removeNote(CHALLENGE_NOTE);
         return true;
+    }
+
+    public static boolean isChallengeActive(
+            KeycloakSession session,
+            UserSessionModel userSession,
+            String challenge) {
+        return challenge != null && challenge.equals(userSession.getNote(CHALLENGE_NOTE))
+                && session.singleUseObjects().contains(challengeKey(userSession.getId(), challenge));
+    }
+
+    public static boolean isRegistrationComplete(UserSessionModel userSession, String challenge) {
+        return challenge != null
+                && challenge.equals(userSession.getNote(COMPLETED_CHALLENGE_NOTE))
+                && userSession.getNote(SESSION_ID_NOTE) != null
+                && userSession.getNote(ATTESTATION_KEY_NOTE) != null
+                && userSession.getNote(ATTESTATION_FORMAT_NOTE) != null
+                && userSession.getNote(ATTESTATION_ALGORITHM_NOTE) != null;
     }
 
     static String challengeKey(String userSessionId, String challenge) {

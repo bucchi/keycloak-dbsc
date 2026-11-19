@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ja" data-status-url="{{STATUS_URL}}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ログイン処理中</title>
+</head>
+<body>
+    <main>
+        <h1>ログイン処理中</h1>
+        <p id="registration-status" role="status">このブラウザーの登録を確認しています。</p>
+        <form id="resume-authentication" method="post" action="{{ACTION_URL}}"></form>
+        <noscript>登録確認にはJavaScriptが必要です。有効にしてから再試行してください。</noscript>
+    </main>
+    <script src="{{SCRIPT_URL}}" defer></script>
+</body>
+</html>

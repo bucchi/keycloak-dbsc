@@ -64,7 +64,8 @@ public class DBSCRegistrationVerifier {
                 attestationAlgorithm);
 
         return new VerifiedRegistration(
-                tpmAttestation, proof.signingKey(), attestationKey, expectedAudience);
+            tpmAttestation, proof.signingKey(), attestationKey, expectedAudience,
+            "TPM", attestationAlgorithm);
     }
 
     private boolean isBlank(String value) {
@@ -75,6 +76,8 @@ public class DBSCRegistrationVerifier {
             TPMSAttest attestation,
             JWK signingKey,
             JWK attestationKey,
-            String audience) {
+            String audience,
+            String attestationFormat,
+            String attestationAlgorithm) {
     }
 }

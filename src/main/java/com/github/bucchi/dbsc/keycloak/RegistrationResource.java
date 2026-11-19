@@ -3,9 +3,11 @@ package com.github.bucchi.dbsc.keycloak;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
@@ -19,6 +21,8 @@ import org.keycloak.models.UserSessionModel;
 import org.keycloak.services.managers.AuthenticationManager;
 import com.github.bucchi.dbsc.verification.DBSCRegistrationVerifier;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -33,6 +37,9 @@ public final class RegistrationResource {
 
     static final String SECURE_SESSION_RESPONSE = "Secure-Session-Response";
     static final String DBSC_COOKIE_NAME = "KC_DBSC_AUTH";
+    static final String START_SESSION_PATH = "StartSession";
+    static final String REGISTRATION_STATUS_PATH = "RegistrationStatus";
+    static final String REGISTRATION_WAIT_SCRIPT_PATH = "RegistrationWait.js";
     static final String REFRESH_PATH = "RefreshSession";
     static final int GRANT_LIFETIME_SECONDS = 600;
 
@@ -41,12 +48,6 @@ public final class RegistrationResource {
 
     private final KeycloakSession session;
     private final DBSCRegistrationVerifier verifier;
-
-    @Context
-    HttpHeaders headers;
-
-    @Context
-    UriInfo uriInfo;
 
     RegistrationResource(KeycloakSession session) {
         this.session = Objects.requireNonNull(session);
@@ -57,7 +58,7 @@ public final class RegistrationResource {
     @Path("StartSession")
     @Consumes(MediaType.WILDCARD)
     @Produces(MediaType.APPLICATION_JSON)
-    public Response register() {
+    public Response register(@Context HttpHeaders headers, @Context UriInfo uriInfo) {
         RealmModel realm = session.getContext().getRealm();
         if (realm == null) {
             return unauthorized();
@@ -83,7 +84,7 @@ public final class RegistrationResource {
             return badRequest();
         }
 
-        URI registrationUri = endpointUri("StartSession");
+        URI registrationUri = endpointUri("StartSession", uriInfo);
         DBSCRegistrationVerifier.VerifiedRegistration verified;
         try {
             verified = verifier.verify(outerJws, expectedChallenge, registrationUri.toString());
@@ -103,7 +104,10 @@ public final class RegistrationResource {
                     MAPPER.writeValueAsString(verified.signingKey()));
             userSession.setNote(DbscRegistrationNotes.ATTESTATION_KEY_NOTE,
                     MAPPER.writeValueAsString(verified.attestationKey()));
+                userSession.setNote(DbscRegistrationNotes.ATTESTATION_FORMAT_NOTE, verified.attestationFormat());
+                userSession.setNote(DbscRegistrationNotes.ATTESTATION_ALGORITHM_NOTE, verified.attestationAlgorithm());
             userSession.setNote(DbscRegistrationNotes.GRANT_HASH_NOTE, sha256(grant));
+            userSession.setNote(DbscRegistrationNotes.COMPLETED_CHALLENGE_NOTE, expectedChallenge);
         } catch (Exception e) {
             return Response.serverError().header("Cache-Control", "no-store").build();
         }
@@ -112,13 +116,70 @@ public final class RegistrationResource {
         String cookieAttributes = "Path=" + cookiePath + "; Secure; HttpOnly; SameSite=Lax";
         SessionInstructions instructions = new SessionInstructions(
                 dbscSessionId,
-                endpointUri(REFRESH_PATH).toString(),
+                endpointUri(REFRESH_PATH, uriInfo).toString(),
                 new ScopeInstructions(origin(uriInfo.getBaseUri()), false, List.of()),
                 List.of(new CookieCredential(DBSC_COOKIE_NAME, cookieAttributes)));
 
         return Response.ok(instructions)
                 .header("Set-Cookie", DBSC_COOKIE_NAME + "=" + grant
                         + "; Max-Age=" + GRANT_LIFETIME_SECONDS + "; " + cookieAttributes)
+                .header("Cache-Control", "no-store")
+                .header("Pragma", "no-cache")
+                .build();
+    }
+
+    @GET
+    @Path(REGISTRATION_STATUS_PATH)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response registrationStatus(@QueryParam("challenge") String challenge) {
+        RealmModel realm = session.getContext().getRealm();
+        if (realm == null || challenge == null || challenge.isBlank()) {
+            return badRequest();
+        }
+
+        AuthenticationManager.AuthResult auth = AuthenticationManager.authenticateIdentityCookie(
+                session, realm, true);
+        if (auth == null || auth.session() == null || auth.session().isOffline()
+                || !AuthenticationManager.isSessionValid(realm, auth.session())) {
+            return unauthorized();
+        }
+
+        UserSessionModel userSession = auth.session();
+        if (challenge.equals(userSession.getNote(DbscRegistrationNotes.COMPLETED_CHALLENGE_NOTE))
+                && userSession.getNote(DbscRegistrationNotes.ATTESTATION_KEY_NOTE) != null
+                && userSession.getNote(DbscRegistrationNotes.ATTESTATION_FORMAT_NOTE) != null
+                && userSession.getNote(DbscRegistrationNotes.ATTESTATION_ALGORITHM_NOTE) != null) {
+            return statusResponse(true);
+        }
+        if (DbscRegistrationNotes.isChallengeActive(session, userSession, challenge)) {
+            return statusResponse(false);
+        }
+        return Response.status(Response.Status.GONE).header("Cache-Control", "no-store").build();
+    }
+
+    @GET
+    @Path(REGISTRATION_WAIT_SCRIPT_PATH)
+    @Produces("application/javascript; charset=UTF-8")
+    public Response registrationWaitScript() {
+        return Response.ok(loadRegistrationWaitScript())
+                .header("Cache-Control", "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .build();
+    }
+
+    private String loadRegistrationWaitScript() {
+        try (InputStream script = getClass().getResourceAsStream("registration-wait.js")) {
+            if (script == null) {
+                throw new IllegalStateException("Registration wait script resource is missing.");
+            }
+            return new String(script.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to read registration wait script resource.", e);
+        }
+    }
+
+    private Response statusResponse(boolean registered) {
+        return Response.ok(new RegistrationStatus(registered))
                 .header("Cache-Control", "no-store")
                 .header("Pragma", "no-cache")
                 .build();
@@ -149,7 +210,7 @@ public final class RegistrationResource {
         return jws;
     }
 
-    private URI endpointUri(String endpoint) {
+    private URI endpointUri(String endpoint, UriInfo uriInfo) {
         return uriInfo.getBaseUriBuilder()
                 .path("realms")
                 .path(session.getContext().getRealm().getName())
@@ -196,6 +257,9 @@ public final class RegistrationResource {
             @JsonProperty("refresh_url") String refreshUrl,
             @JsonProperty("scope") ScopeInstructions scope,
             @JsonProperty("credentials") List<CookieCredential> credentials) {
+    }
+
+    public record RegistrationStatus(@JsonProperty("registered") boolean registered) {
     }
 
     public record ScopeInstructions(

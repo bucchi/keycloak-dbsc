@@ -73,6 +73,47 @@ final class TpmAttestationVerifier {
         return attestation;
     }
 
+    TPMSAttest verifyBinding(
+            JsonNode claim,
+            String challenge,
+            JWK signingKey,
+            String signingAlgorithm,
+            JWK attestationKey,
+            String attestationAlgorithm,
+            String attestationFormat) throws Exception {
+        if (!"TPM".equals(attestationFormat)) {
+            throw new SecurityException("登録済みattestation形式はTPMではありません。");
+        }
+        requireSupportedAlgorithm(signingAlgorithm);
+        requireSupportedAlgorithm(attestationAlgorithm);
+
+        TPMSAttest attestation = decodeTpm(
+                decodeBase64Url(requiredText(claim, "stmt"), "stmt"), TPMSAttest.class, "TPMS_ATTEST");
+        if (attestation.getMagic() != TPMGenerated.TPM_GENERATED_VALUE
+                || attestation.getType() != TPMISTAttest.TPM_ST_ATTEST_CERTIFY) {
+            throw new SecurityException("TPMS_ATTESTが有効なTPM certify構造ではありません。");
+        }
+
+        byte[] expectedExtraData = MessageDigest.getInstance(hashName(attestationAlgorithm))
+                .digest(challenge.getBytes(StandardCharsets.UTF_8));
+        if (!MessageDigest.isEqual(expectedExtraData, attestation.getExtraData())) {
+            throw new SecurityException("binding attestationのchallengeが一致しません。");
+        }
+
+        TPMTPublic subjectKey = decodeTpm(
+                decodeBase64Url(requiredText(claim, "sub_key"), "sub_key"),
+                TPMTPublic.class,
+                "TPMT_PUBLIC");
+        verifySubjectKeyMatchesProof(subjectKey, signingKey, signingAlgorithm);
+        verifyCertifiedName(attestation, subjectKey);
+        verifyTpmSignature(
+                decodeBase64Url(requiredText(claim, "sig"), "sig"),
+                attestation.getBytes(),
+                attestationKey,
+                attestationAlgorithm);
+        return attestation;
+    }
+
     private void verifySubjectKeyMatchesProof(TPMTPublic subjectKey, JWK signingKey, String proofAlgorithm) {
         if ("ES256".equals(proofAlgorithm)) {
             if (subjectKey.getType() != TPMIAlgPublic.TPM_ALG_ECC
